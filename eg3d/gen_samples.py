@@ -159,8 +159,6 @@ def generate_images(
 
     # Generate images.
     for seed_idx, seed in enumerate(seeds):
-        #Start timing the whole process of generating an image, from latent code generation to superresolution
-        start_time_overall = time.time()
 
         print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
         z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
@@ -178,11 +176,14 @@ def generate_images(
 
             ws = G.mapping(z, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
             #Triplane synthesis + image rendering is done here
+            #Start timing the whole process of generating an image, from latent code generation to superresolution
+            start_time_overall = time.time()
             img = G.synthesis(ws, camera_params)['image']
+            print("Pipeline runtime: %s milliseconds" % (1000 * (time.time() - start_time_overall)))
 
             img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
             #Store image to understand difference with the final output they give
-            PIL.Image.fromarray(img.cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}_angle_{angle_y}.png')
+            PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}_angle_{angle_y}.png')
             imgs.append(img)
 
         #The 3 images are concatenated ? makes no sense for now

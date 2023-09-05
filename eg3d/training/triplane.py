@@ -15,6 +15,8 @@ from training.volumetric_rendering.renderer import ImportanceRenderer
 from training.volumetric_rendering.ray_sampler import RaySampler
 import dnnlib
 
+import time
+
 @persistence.persistent_class
 class TriPlaneGenerator(torch.nn.Module):
     def __init__(self,
@@ -62,6 +64,8 @@ class TriPlaneGenerator(torch.nn.Module):
         # Create a batch of rays for volume rendering
         ray_origins, ray_directions = self.ray_sampler(cam2world_matrix, intrinsics, neural_rendering_resolution)
 
+        start_time_triplane = time.time()
+
         # Create triplanes by running StyleGAN backbone
         N, M, _ = ray_origins.shape
         if use_cached_backbone and self._last_planes is not None:
@@ -74,17 +78,27 @@ class TriPlaneGenerator(torch.nn.Module):
         # Reshape output into three 32-channel planes
         planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
 
+        print("Triplane generation runtime: %s milliseconds" % (1000 * (time.time() - start_time_triplane)))
+
+        start_time_rendering = time.time()
+
         # Perform volume rendering
         feature_samples, depth_samples, weights_samples = self.renderer(planes, self.decoder, ray_origins, ray_directions, self.rendering_kwargs) # channels last
+
+        print("Rendering runtime: %s milliseconds" % (1000 * (time.time() - start_time_rendering)))
 
         # Reshape into 'raw' neural-rendered image
         H = W = self.neural_rendering_resolution
         feature_image = feature_samples.permute(0, 2, 1).reshape(N, feature_samples.shape[-1], H, W).contiguous()
         depth_image = depth_samples.permute(0, 2, 1).reshape(N, 1, H, W)
 
+        start_time_superresolution = time.time()
+
         # Run superresolution to get final image
         rgb_image = feature_image[:, :3]
         sr_image = self.superresolution(rgb_image, feature_image, ws, noise_mode=self.rendering_kwargs['superresolution_noise_mode'], **{k:synthesis_kwargs[k] for k in synthesis_kwargs.keys() if k != 'noise_mode'})
+
+        print("Superresolution runtime: %s milliseconds" % (1000 * (time.time() - start_time_superresolution)))
 
         return {'image': sr_image, 'image_raw': rgb_image, 'image_depth': depth_image}
     
