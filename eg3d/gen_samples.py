@@ -28,6 +28,7 @@ from camera_utils import LookAtPoseSampler, FOV_to_intrinsics
 from torch_utils import misc
 from training.triplane import TriPlaneGenerator
 
+import time
 
 #----------------------------------------------------------------------------
 
@@ -158,11 +159,15 @@ def generate_images(
 
     # Generate images.
     for seed_idx, seed in enumerate(seeds):
+        #Start timing the whole process of generating an image, from latent code generation to superresolution
+        start_time_overall = time.time()
+
         print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
         z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
 
         imgs = []
         angle_p = -0.2
+        #Why is there a for loop here ? It seems they render 3 different images from slightly different angles ?
         for angle_y, angle_p in [(.4, angle_p), (0, angle_p), (-.4, angle_p)]:
             cam_pivot = torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=device)
             cam_radius = G.rendering_kwargs.get('avg_camera_radius', 2.7)
@@ -172,13 +177,18 @@ def generate_images(
             conditioning_params = torch.cat([conditioning_cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
 
             ws = G.mapping(z, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
+            #Triplane synthesis + image rendering is done here
             img = G.synthesis(ws, camera_params)['image']
 
             img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+            #Store image to understand difference with the final output they give
+            PIL.Image.fromarray(img.cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}_angle_{angle_y}.png')
             imgs.append(img)
 
+        #The 3 images are concatenated ? makes no sense for now
         img = torch.cat(imgs, dim=2)
 
+        #Need to compare this to the individual outputs to understand what's going on
         PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.png')
 
         if shapes:
