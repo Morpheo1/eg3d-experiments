@@ -14,6 +14,7 @@ ray, and computes pixel colors using the volume rendering equation.
 """
 
 import math
+import time
 import torch
 import torch.nn as nn
 
@@ -84,8 +85,12 @@ class ImportanceRenderer(torch.nn.Module):
         super().__init__()
         self.ray_marcher = MipRayMarcher2()
         self.plane_axes = generate_planes()
+        self.start_time_ray_marching = 0
+        self.total_time_ray_marching = 0
+        self.total_time_decoding = 0
 
     def forward(self, planes, decoder, ray_origins, ray_directions, rendering_options):
+        self.start_time_ray_marching = time.time()
         self.plane_axes = self.plane_axes.to(ray_origins.device)
 
         if rendering_options['ray_start'] == rendering_options['ray_end'] == 'auto':
@@ -107,6 +112,7 @@ class ImportanceRenderer(torch.nn.Module):
 
 
         out = self.run_model(planes, decoder, sample_coordinates, sample_directions, rendering_options)
+        self.start_time_ray_marching = time.time()
         colors_coarse = out['rgb']
         densities_coarse = out['sigma']
         colors_coarse = colors_coarse.reshape(batch_size, num_rays, samples_per_ray, colors_coarse.shape[-1])
@@ -123,6 +129,9 @@ class ImportanceRenderer(torch.nn.Module):
             sample_coordinates = (ray_origins.unsqueeze(-2) + depths_fine * ray_directions.unsqueeze(-2)).reshape(batch_size, -1, 3)
 
             out = self.run_model(planes, decoder, sample_coordinates, sample_directions, rendering_options)
+
+            self.start_time_ray_marching = time.time()
+
             colors_fine = out['rgb']
             densities_fine = out['sigma']
             colors_fine = colors_fine.reshape(batch_size, num_rays, N_importance, colors_fine.shape[-1])
@@ -136,13 +145,21 @@ class ImportanceRenderer(torch.nn.Module):
         else:
             rgb_final, depth_final, weights = self.ray_marcher(colors_coarse, densities_coarse, depths_coarse, rendering_options)
 
+        self.total_time_ray_marching += 1000 * (time.time() - self.start_time_ray_marching)
+
+        print("Volume rendering - Ray marching runtime: %s ms" % self.total_time_ray_marching)
+        print("Volume rendering - Triplane decoding runtime: %s ms" % self.total_time_decoding)
 
         return rgb_final, depth_final, weights.sum(2)
 
     def run_model(self, planes, decoder, sample_coordinates, sample_directions, options):
         sampled_features = sample_from_planes(self.plane_axes, planes, sample_coordinates, padding_mode='zeros', box_warp=options['box_warp'])
+        self.total_time_ray_marching += 1000 * (time.time() - self.start_time_ray_marching)
 
+        start_time_decoding = time.time()
         out = decoder(sampled_features, sample_directions)
+        self.total_time_decoding += 1000 * (time.time() - start_time_decoding)
+
         if options.get('density_noise', 0) > 0:
             out['sigma'] += torch.randn_like(out['sigma']) * options['density_noise']
         return out

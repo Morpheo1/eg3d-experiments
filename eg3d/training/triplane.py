@@ -64,6 +64,7 @@ class TriPlaneGenerator(torch.nn.Module):
         # Create a batch of rays for volume rendering
         ray_origins, ray_directions = self.ray_sampler(cam2world_matrix, intrinsics, neural_rendering_resolution)
 
+        #Time going from latent vector to triplane
         start_time_triplane = time.time()
 
         # Create triplanes by running StyleGAN backbone
@@ -78,14 +79,15 @@ class TriPlaneGenerator(torch.nn.Module):
         # Reshape output into three 32-channel planes
         planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
 
-        print("Triplane generation runtime: %s milliseconds" % (1000 * (time.time() - start_time_triplane)))
+        print("Triplane generation runtime: %s ms" % (1000 * (time.time() - start_time_triplane)))
 
+        #Time volume rendering
         start_time_rendering = time.time()
 
         # Perform volume rendering
         feature_samples, depth_samples, weights_samples = self.renderer(planes, self.decoder, ray_origins, ray_directions, self.rendering_kwargs) # channels last
 
-        print("Rendering runtime: %s milliseconds" % (1000 * (time.time() - start_time_rendering)))
+        print("Volume rendering runtime: %s ms" % (1000 * (time.time() - start_time_rendering)))
 
         # Reshape into 'raw' neural-rendered image
         H = W = self.neural_rendering_resolution
@@ -98,7 +100,7 @@ class TriPlaneGenerator(torch.nn.Module):
         rgb_image = feature_image[:, :3]
         sr_image = self.superresolution(rgb_image, feature_image, ws, noise_mode=self.rendering_kwargs['superresolution_noise_mode'], **{k:synthesis_kwargs[k] for k in synthesis_kwargs.keys() if k != 'noise_mode'})
 
-        print("Superresolution runtime: %s milliseconds" % (1000 * (time.time() - start_time_superresolution)))
+        print("Superresolution runtime: %s ms" % (1000 * (time.time() - start_time_superresolution)))
 
         return {'image': sr_image, 'image_raw': rgb_image, 'image_depth': depth_image}
     
