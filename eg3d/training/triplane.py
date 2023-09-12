@@ -52,7 +52,7 @@ class TriPlaneGenerator(torch.nn.Module):
                 c = torch.zeros_like(c)
         return self.backbone.mapping(z, c * self.rendering_kwargs.get('c_scale', 0), truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
 
-    def synthesis(self, ws, c, neural_rendering_resolution=None, update_emas=False, cache_backbone=False, use_cached_backbone=False, **synthesis_kwargs):
+    def synthesis(self, ws, c, n_coarse, n_fine, neural_rendering_resolution=None, update_emas=False, cache_backbone=False, use_cached_backbone=False, **synthesis_kwargs):
         cam2world_matrix = c[:, :16].view(-1, 4, 4)
         intrinsics = c[:, 16:25].view(-1, 3, 3)
 
@@ -65,7 +65,7 @@ class TriPlaneGenerator(torch.nn.Module):
         ray_origins, ray_directions = self.ray_sampler(cam2world_matrix, intrinsics, neural_rendering_resolution)
 
         #Time going from latent vector to triplane
-        start_time_triplane = time.time()
+        start_time_triplane = time.time_ns()
 
         # Create triplanes by running StyleGAN backbone
         N, M, _ = ray_origins.shape
@@ -79,30 +79,36 @@ class TriPlaneGenerator(torch.nn.Module):
         # Reshape output into three 32-channel planes
         planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
 
-        print("Triplane generation runtime: %s ms" % (1000 * (time.time() - start_time_triplane)))
+        time_triplane = (1e-6 * (time.time_ns() - start_time_triplane))
+        """ print("Triplane generation runtime: %s ms" % time_triplane)
+        print("-------------") """
 
         #Time volume rendering
-        start_time_rendering = time.time()
+        start_time_rendering = time.time_ns()
 
         # Perform volume rendering
-        feature_samples, depth_samples, weights_samples = self.renderer(planes, self.decoder, ray_origins, ray_directions, self.rendering_kwargs) # channels last
+        feature_samples, depth_samples, weights_samples, (time_coarse, time_fine, total_time_ray_marching, total_time_decoding) = self.renderer(planes, self.decoder, ray_origins, ray_directions, n_coarse, n_fine, self.rendering_kwargs) # channels last
 
-        print("Volume rendering runtime: %s ms" % (1000 * (time.time() - start_time_rendering)))
+        time_rendering = (1e-6 * (time.time_ns() - start_time_rendering))
+        """ print("Volume rendering runtime: %s ms" % time_rendering)
+        print("-------------") """
 
         # Reshape into 'raw' neural-rendered image
         H = W = self.neural_rendering_resolution
         feature_image = feature_samples.permute(0, 2, 1).reshape(N, feature_samples.shape[-1], H, W).contiguous()
         depth_image = depth_samples.permute(0, 2, 1).reshape(N, 1, H, W)
 
-        start_time_superresolution = time.time()
+        start_time_superresolution = time.time_ns()
 
         # Run superresolution to get final image
         rgb_image = feature_image[:, :3]
         sr_image = self.superresolution(rgb_image, feature_image, ws, noise_mode=self.rendering_kwargs['superresolution_noise_mode'], **{k:synthesis_kwargs[k] for k in synthesis_kwargs.keys() if k != 'noise_mode'})
 
-        print("Superresolution runtime: %s ms" % (1000 * (time.time() - start_time_superresolution)))
+        time_superres = (1e-6 * (time.time_ns() - start_time_superresolution))
+        """ print("Superresolution runtime: %s ms" % time_superres)
+        print("-------------") """
 
-        return {'image': sr_image, 'image_raw': rgb_image, 'image_depth': depth_image}
+        return {'image': sr_image, 'image_raw': rgb_image, 'image_depth': depth_image, 'timings': (time_coarse, time_fine, total_time_ray_marching, total_time_decoding, time_triplane, time_rendering, time_superres)}
     
     def sample(self, coordinates, directions, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
         # Compute RGB features, density for arbitrary 3D coordinates. Mostly used for extracting shapes. 

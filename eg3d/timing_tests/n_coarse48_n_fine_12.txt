@@ -1,0 +1,29 @@
+----------------------------------------------------------------
+Triplane generation runtime: 9.721161616161615 ms
+-------------
+Volume rendering - Coarse pass runtime: 8.451913131313132 ms
+Volume rendering - Fine pass runtime: 18.87845151515152 ms
+----
+Volume rendering - Ray marching runtime: 18.43502525252525 ms
+Volume rendering - Triplane decoding runtime: 8.88526161616162 ms
+----
+Volume rendering runtime: 27.35051414141414 ms
+-------------
+Superresolution runtime: 3.7581444444444436 ms
+-------------
+Pipeline runtime: 41.41424747474748 milliseconds
+--------------------------------------------------------------------------------------------------------------------------------
+Triplane generation runtime: 9.44910505050505 ms
+-------------
+Volume rendering - Coarse pass runtime: 8.78416767676768 ms
+Volume rendering - Fine pass runtime: 18.727357575757576 ms
+----
+Volume rendering - Ray marching runtime: 18.253780808080805 ms
+Volume rendering - Triplane decoding runtime: 9.247653535353537 ms
+----
+Volume rendering runtime: 27.561906060606052 ms
+-------------
+Superresolution runtime: 3.5870969696969697 ms
+-------------
+Pipeline runtime: 41.253216161616166 milliseconds
+----------------------------------------------------------------

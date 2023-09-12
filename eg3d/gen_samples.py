@@ -165,8 +165,97 @@ def generate_images(
 
         imgs = []
         angle_p = -0.2
-        #Why is there a for loop here ? It seems they render 3 different images from slightly different angles ?
-        for angle_y, angle_p in [(.4, angle_p), (0, angle_p), (-.4, angle_p)]:
+        angle_y = 0
+
+        cam_pivot = torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=device)
+        cam_radius = G.rendering_kwargs.get('avg_camera_radius', 2.7)
+        cam2world_pose = LookAtPoseSampler.sample(np.pi/2 + angle_y, np.pi/2 + angle_p, cam_pivot, radius=cam_radius, device=device)
+        conditioning_cam2world_pose = LookAtPoseSampler.sample(np.pi/2, np.pi/2, cam_pivot, radius=cam_radius, device=device)
+        camera_params = torch.cat([cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+        conditioning_params = torch.cat([conditioning_cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+
+        ws = G.mapping(z, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
+        #Triplane synthesis + image rendering is done here
+        #Start timing the whole process of generating an image, from latent code generation to superresolution
+
+        average_time_total = 0
+        average_time_coarse = 0
+        average_time_fine = 0
+        average_time_ray_marching = 0
+        average_time_querying = 0
+        average_time_triplane = 0
+        average_time_render = 0
+        average_time_superres = 0
+
+        n = 100
+
+        n_coarse = 12
+        n_fine = 12
+
+        for i in range(n):
+            start_time_overall = time.time_ns()
+            output = G.synthesis(ws, camera_params, n_coarse, n_fine)
+            timings = output['timings']
+            if i != 0:
+                average_time_total += (1e-6 * (time.time_ns() - start_time_overall))
+                average_time_coarse += timings[0]
+                average_time_fine += timings[1]
+                average_time_ray_marching += timings[2]
+                average_time_querying += timings[3]
+                average_time_triplane += timings[4]
+                average_time_render += timings[5]
+                average_time_superres += timings[6]
+            img = output['image']
+        
+        average_time_total /= n - 1
+        average_time_coarse /= n - 1
+        average_time_fine /= n - 1
+        average_time_ray_marching /= n - 1
+        average_time_querying /= n - 1
+        average_time_triplane /= n - 1
+        average_time_render /= n - 1
+        average_time_superres /= n - 1
+
+        print("----------------------------------------------------------------")
+        print("Triplane generation runtime: %s ms" % average_time_triplane)
+        print("-------------")
+        print("Volume rendering - Coarse pass runtime: %s ms" % average_time_coarse)
+        print("Volume rendering - Fine pass runtime: %s ms" % average_time_fine)
+        print("----")
+        print("Volume rendering - Ray marching runtime: %s ms" % average_time_ray_marching)
+        print("Volume rendering - Triplane decoding runtime: %s ms" % average_time_querying)
+        print("----")
+        print("Volume rendering runtime: %s ms" % average_time_render)
+        print("-------------")
+        print("Superresolution runtime: %s ms" % average_time_superres)
+        print("-------------")
+        print("Pipeline runtime: %s milliseconds" % average_time_total)
+        print("----------------------------------------------------------------")
+
+        with open(f'{outdir}/n_coarse{n_coarse}_n_fine_{n_fine}.txt', 'a') as outtxt:
+            outtxt.write('----------------------------------------------------------------\n')
+            outtxt.write("Triplane generation runtime: %s ms\n" % average_time_triplane)
+            outtxt.write("-------------\n")
+            outtxt.write("Volume rendering - Coarse pass runtime: %s ms\n" % average_time_coarse)
+            outtxt.write("Volume rendering - Fine pass runtime: %s ms\n" % average_time_fine)
+            outtxt.write("----\n")
+            outtxt.write("Volume rendering - Ray marching runtime: %s ms\n" % average_time_ray_marching)
+            outtxt.write("Volume rendering - Triplane decoding runtime: %s ms\n" % average_time_querying)
+            outtxt.write("----\n")
+            outtxt.write("Volume rendering runtime: %s ms\n" % average_time_render)
+            outtxt.write("-------------\n")
+            outtxt.write("Superresolution runtime: %s ms\n" % average_time_superres)
+            outtxt.write("-------------\n")
+            outtxt.write("Pipeline runtime: %s milliseconds\n" % average_time_total)
+            outtxt.write("----------------------------------------------------------------")
+            
+
+        img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        #Store image to understand difference with the final output they give
+        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}_angle_{angle_y}.png')
+        imgs.append(img)
+        
+        """ for angle_y, angle_p in [(.4, angle_p), (0, angle_p), (-.4, angle_p)]:
             cam_pivot = torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=device)
             cam_radius = G.rendering_kwargs.get('avg_camera_radius', 2.7)
             cam2world_pose = LookAtPoseSampler.sample(np.pi/2 + angle_y, np.pi/2 + angle_p, cam_pivot, radius=cam_radius, device=device)
@@ -177,24 +266,19 @@ def generate_images(
             ws = G.mapping(z, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
             #Triplane synthesis + image rendering is done here
             #Start timing the whole process of generating an image, from latent code generation to superresolution
-            start_time_overall = time.time()
+            start_time_overall = time.time_ns()
             img = G.synthesis(ws, camera_params)['image']
-            print("Pipeline runtime: %s milliseconds" % (1000 * (time.time() - start_time_overall)))
+            print("Pipeline runtime: %s milliseconds" % (1e-6 * (time.time_ns() - start_time_overall)))
+            print("----------------------------------------------------------------")
 
             img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
             #Store image to understand difference with the final output they give
             PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}_angle_{angle_y}.png')
-            imgs.append(img)
-
-        #The 3 images are concatenated ? makes no sense for now
-        img = torch.cat(imgs, dim=2)
-
-        #Need to compare this to the individual outputs to understand what's going on
-        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.png')
+            imgs.append(img) """
 
         if shapes:
             # extract a shape.mrc with marching cubes. You can view the .mrc file using ChimeraX from UCSF.
-            max_batch=1000000
+            max_batch=1000
 
             samples, voxel_origin, voxel_size = create_samples(N=shape_res, voxel_origin=[0, 0, 0], cube_length=G.rendering_kwargs['box_warp'] * 1)#.reshape(1, -1, 3)
             samples = samples.to(z.device)

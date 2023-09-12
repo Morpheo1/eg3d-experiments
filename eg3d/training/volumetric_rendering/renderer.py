@@ -89,20 +89,29 @@ class ImportanceRenderer(torch.nn.Module):
         self.total_time_ray_marching = 0
         self.total_time_decoding = 0
 
-    def forward(self, planes, decoder, ray_origins, ray_directions, rendering_options):
-        self.start_time_ray_marching = time.time()
+    def forward(self, planes, decoder, ray_origins, ray_directions, n_coarse, n_fine, rendering_options):
+        self.total_time_ray_marching = 0
+        self.total_time_decoding = 0
+        self.start_time_ray_marching = time.time_ns()
         self.plane_axes = self.plane_axes.to(ray_origins.device)
 
+        start_time_coarse = time.time_ns()
+
         if rendering_options['ray_start'] == rendering_options['ray_end'] == 'auto':
+
+            #Not executed with the pre-trained model
+
             ray_start, ray_end = math_utils.get_ray_limits_box(ray_origins, ray_directions, box_side_length=rendering_options['box_warp'])
             is_ray_valid = ray_end > ray_start
             if torch.any(is_ray_valid).item():
                 ray_start[~is_ray_valid] = ray_start[is_ray_valid].min()
                 ray_end[~is_ray_valid] = ray_start[is_ray_valid].max()
-            depths_coarse = self.sample_stratified(ray_origins, ray_start, ray_end, rendering_options['depth_resolution'], rendering_options['disparity_space_sampling'])
+            #depths_coarse = self.sample_stratified(ray_origins, ray_start, ray_end, rendering_options['depth_resolution'], rendering_options['disparity_space_sampling'])
+            depths_coarse = self.sample_stratified(ray_origins, ray_start, ray_end, n_coarse, rendering_options['disparity_space_sampling'])
         else:
             # Create stratified depth samples
-            depths_coarse = self.sample_stratified(ray_origins, rendering_options['ray_start'], rendering_options['ray_end'], rendering_options['depth_resolution'], rendering_options['disparity_space_sampling'])
+            #depths_coarse = self.sample_stratified(ray_origins, rendering_options['ray_start'], rendering_options['ray_end'], rendering_options['depth_resolution'], rendering_options['disparity_space_sampling'])
+            depths_coarse = self.sample_stratified(ray_origins, rendering_options['ray_start'], rendering_options['ray_end'], n_coarse, rendering_options['disparity_space_sampling'])
 
         batch_size, num_rays, samples_per_ray, _ = depths_coarse.shape
 
@@ -110,16 +119,25 @@ class ImportanceRenderer(torch.nn.Module):
         sample_coordinates = (ray_origins.unsqueeze(-2) + depths_coarse * ray_directions.unsqueeze(-2)).reshape(batch_size, -1, 3)
         sample_directions = ray_directions.unsqueeze(-2).expand(-1, -1, samples_per_ray, -1).reshape(batch_size, -1, 3)
 
-
+        self.total_time_ray_marching += 1e-6 * (time.time_ns() - self.start_time_ray_marching)
+        start_time_decoding = time.time_ns()
+        
         out = self.run_model(planes, decoder, sample_coordinates, sample_directions, rendering_options)
-        self.start_time_ray_marching = time.time()
+
+        self.total_time_decoding += 1e-6 * (time.time_ns() - start_time_decoding)
+        self.start_time_ray_marching = time.time_ns()
+
         colors_coarse = out['rgb']
         densities_coarse = out['sigma']
         colors_coarse = colors_coarse.reshape(batch_size, num_rays, samples_per_ray, colors_coarse.shape[-1])
         densities_coarse = densities_coarse.reshape(batch_size, num_rays, samples_per_ray, 1)
 
+        time_coarse = 1e-6 * (time.time_ns() - start_time_coarse)
+        start_time_fine = time.time_ns()
+
         # Fine Pass
-        N_importance = rendering_options['depth_resolution_importance']
+        #N_importance = rendering_options['depth_resolution_importance']
+        N_importance = n_fine
         if N_importance > 0:
             _, _, weights = self.ray_marcher(colors_coarse, densities_coarse, depths_coarse, rendering_options)
 
@@ -128,9 +146,13 @@ class ImportanceRenderer(torch.nn.Module):
             sample_directions = ray_directions.unsqueeze(-2).expand(-1, -1, N_importance, -1).reshape(batch_size, -1, 3)
             sample_coordinates = (ray_origins.unsqueeze(-2) + depths_fine * ray_directions.unsqueeze(-2)).reshape(batch_size, -1, 3)
 
+            self.total_time_ray_marching += 1e-6 * (time.time_ns() - self.start_time_ray_marching)
+            start_time_decoding = time.time_ns()
+
             out = self.run_model(planes, decoder, sample_coordinates, sample_directions, rendering_options)
 
-            self.start_time_ray_marching = time.time()
+            self.total_time_decoding += 1e-6 * (time.time_ns() - start_time_decoding)
+            self.start_time_ray_marching = time.time_ns()
 
             colors_fine = out['rgb']
             densities_fine = out['sigma']
@@ -145,20 +167,23 @@ class ImportanceRenderer(torch.nn.Module):
         else:
             rgb_final, depth_final, weights = self.ray_marcher(colors_coarse, densities_coarse, depths_coarse, rendering_options)
 
-        self.total_time_ray_marching += 1000 * (time.time() - self.start_time_ray_marching)
+        self.total_time_ray_marching += 1e-6 * (time.time_ns() - self.start_time_ray_marching)
 
+        time_fine = 1e-6 * (time.time_ns() - start_time_fine)
+
+        """ print("Volume rendering - Coarse pass runtime: %s ms" % time_coarse)
+        print("Volume rendering - Fine pass runtime: %s ms" % time_fine)
+        print("----")
         print("Volume rendering - Ray marching runtime: %s ms" % self.total_time_ray_marching)
         print("Volume rendering - Triplane decoding runtime: %s ms" % self.total_time_decoding)
+        print("----") """
 
-        return rgb_final, depth_final, weights.sum(2)
+        return rgb_final, depth_final, weights.sum(2), (time_coarse, time_fine, self.total_time_ray_marching, self.total_time_decoding)
 
     def run_model(self, planes, decoder, sample_coordinates, sample_directions, options):
         sampled_features = sample_from_planes(self.plane_axes, planes, sample_coordinates, padding_mode='zeros', box_warp=options['box_warp'])
-        self.total_time_ray_marching += 1000 * (time.time() - self.start_time_ray_marching)
 
-        start_time_decoding = time.time()
         out = decoder(sampled_features, sample_directions)
-        self.total_time_decoding += 1000 * (time.time() - start_time_decoding)
 
         if options.get('density_noise', 0) > 0:
             out['sigma'] += torch.randn_like(out['sigma']) * options['density_noise']
